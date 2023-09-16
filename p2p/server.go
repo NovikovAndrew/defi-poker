@@ -2,12 +2,11 @@ package p2p
 
 import (
 	"bytes"
-	"encoding/gob"
+	"encoding/binary"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
-	"sync"
 )
 
 type GameKing uint8
@@ -42,12 +41,12 @@ type Message struct {
 type Server struct {
 	ServerConfig
 	listener  net.Listener
-	mu        sync.RWMutex
 	transport *TCPTransport
 	peers     map[net.Addr]Peer
 	addPeer   chan *Peer
 	delPeer   chan *Peer
 	msgCh     chan *Message
+	gameState *GameState
 }
 
 func NewServer(cfg ServerConfig) *Server {
@@ -57,6 +56,7 @@ func NewServer(cfg ServerConfig) *Server {
 		addPeer:      make(chan *Peer),
 		delPeer:      make(chan *Peer),
 		msgCh:        make(chan *Message),
+		gameState:    NewGameState(),
 	}
 
 	tp := NewTCPTransport(cfg.ListenAddr)
@@ -104,9 +104,7 @@ func (s *Server) loop() {
 			}).Info("player disconnected")
 
 			addr := peer.conn.RemoteAddr()
-			s.mu.Lock()
 			delete(s.peers, addr)
-			s.mu.Unlock()
 		case peer := <-s.addPeer:
 			// if new player connect to the server we send our handshake and
 			// wait his response
@@ -140,9 +138,12 @@ func (s *Server) SendHandshake(peer *Peer) error {
 	}
 
 	buf := new(bytes.Buffer)
-	if err := gob.NewEncoder(buf).Encode(hs); err != nil {
+	if err := hs.Encode(buf); err != nil {
 		return err
 	}
+	//if err := gob.NewEncoder(buf).Encode(hs); err != nil {
+	//	return err
+	//}
 
 	return peer.send(buf.Bytes())
 }
@@ -152,9 +153,29 @@ type Handshake struct {
 	GameKing GameKing
 }
 
+func (hs *Handshake) Encode(w io.Writer) error {
+	if err := binary.Write(w, binary.LittleEndian, []byte(hs.Version)); err != nil {
+		return err
+	}
+
+	return binary.Write(w, binary.LittleEndian, hs.GameKing)
+}
+
+func (hs *Handshake) Decode(r io.Reader) error {
+	if err := binary.Read(r, binary.LittleEndian, []byte(hs.Version)); err != nil {
+		return err
+	}
+
+	return binary.Read(r, binary.LittleEndian, hs.GameKing)
+}
+
 func (s *Server) handshake(peer *Peer) error {
 	hs := &Handshake{}
-	if err := gob.NewDecoder(peer.conn).Decode(hs); err != nil {
+	//if err := gob.NewDecoder(peer.conn).Decode(hs); err != nil {
+	//	return err
+	//}
+
+	if err := hs.Decode(peer.conn); err != nil {
 		return err
 	}
 
